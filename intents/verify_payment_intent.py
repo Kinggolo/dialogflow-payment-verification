@@ -2,107 +2,102 @@ import logging
 from pymongo import MongoClient
 from dotenv import load_dotenv
 import os
-from datetime import datetime, timedelta
+import re
 
 # Load environment variables
 load_dotenv()
 
+# Setup Logging
+#logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 # MongoDB Connection
-client = MongoClient(os.getenv("MONGO_URI"))
-db = client[os.getenv("DATABASE_NAME")]
-payments_collection = db["payments"]
-paid_subjects_collection = db["paid_subjects"]  # Correct collection for paid subjects
-subjects_collection = db["subjects"]  # Correct collection for subjects
+try:
+    client = MongoClient(os.getenv("MONGO_URI"))
+    db = client[os.getenv("DATABASE_NAME")]
+    payments_collection = db["payments"]
+    paid_subjects_collection = db["paid_subjects"]
+except Exception as e:
+    #logging.error(f"MongoDB Connection Error: {e}")
+    raise SystemExit("Failed to connect to MongoDB.")
 
-# Payment Verification with Correct Price & PDF Link (Time-based Access)
+def extract_price(price_data):
+    """ Convert MongoDB's {"$numberInt": "1"} format to integer """
+    if isinstance(price_data, dict) and "$numberInt" in price_data:
+        return int(price_data["$numberInt"])
+    return price_data if isinstance(price_data, int) else None
+
+def clean_value(value):
+    """ Convert 'null' string or None to proper None type """
+    return None if value in ["null", None] else value
+
+
 def verify_payment(user_input):
-    query = {}
+    #logging.info(f"User Input: {user_input}")
 
-    # Build dynamic query for MongoDB to check if any of these details match
-    if user_input.get("email"):
-        query["email"] = user_input["email"]
-    if user_input.get("payment_id"):
-        query["payment_id"] = user_input["payment_id"]
-    if user_input.get("rrn"):
-        query["rrn"] = user_input["rrn"]
+    query = {"$or": [{"email": user_input.get("email")},
+                     {"payment_id": user_input.get("payment_id")},
+                     {"rrn": user_input.get("rrn")}]}
 
-    if not query:
-        return {"fulfillmentText": "Please provide your email, payment ID, or transaction ID."}
+    if not any(query["$or"]):
+        return {"fulfillmentMessages": [{"text": {"text": ["Please provide your email, payment ID, or transaction ID."]}}]}
 
-    # Find matching payment data
-    purchased_items = list(payments_collection.find(query))
+    purchased_items = list(payments_collection.find(query, {"_id": 0, "currency": 0, "status": 0, "mobile_no": 0}))
+    #logging.info(f"Purchased Items: {purchased_items}")
 
     if not purchased_items:
-        return {"fulfillmentText": "I'm sorry, no payment found with the given details."}
+        return {"fulfillmentMessages": [{"text": {"text": ["No payment found with the given details."]}}]}
 
-    response_text = "Your Payment is Successful!\n\n"
+    fulfillment_messages = []
 
-    for payment_data in purchased_items:
-        # Extract necessary details from the payment data
-        subject_name = payment_data.get('subject', 'N/A')
-        price_str = payment_data.get('price', 'N/A')
-        language = payment_data.get('language', 'N/A')
-        payment_date_str = payment_data.get('date', 'N/A')
+    for idx, payment_data in enumerate(purchased_items, start=1):
+        subject_name = clean_value(payment_data.get('subject'))
+        language = clean_value(payment_data.get('language'))
+        month = clean_value(payment_data.get('month'))
+        price = extract_price(payment_data.get('price'))
+        payment_id = payment_data.get('payment_id', 'N/A')
 
-        # Convert payment date string to datetime object (full datetime format)
-        if payment_date_str != 'N/A':
-            try:
-                payment_date = datetime.strptime(payment_date_str, '%Y-%m-%d %H:%M:%S')  # Full datetime format
-            except ValueError:
-                payment_date = None
-        else:
-            payment_date = None
+        #logging.info(f"Checking Subject: {subject_name}, Language: {language}, Price: {price}, Month: {month}")
 
-        # Check if the payment was made more than 7 days ago
-        if payment_date and (datetime.now() - payment_date) > timedelta(weeks=1):
-            return {
-                "fulfillmentText": "Sorry, your payment details are no longer available. The access period has expired."
-            }
+        subject_query = {"price": {"$in": [price, str(price)]}}
+        if subject_name:
+            subject_query["subject"] = {"$regex": f"^{re.escape(subject_name)}$", "$options": "i"}
+        if language:
+            subject_query["language"] = {"$regex": f"^{re.escape(language)}$", "$options": "i"}
+        if month:
+            subject_query["month"] = {"$regex": f"^{re.escape(month)}$", "$options": "i"}
 
-        # Convert price to integer if it contains "₹" symbol or if it's a string
-        price = None
-        if isinstance(price_str, str):
-            price = int(''.join(filter(str.isdigit, price_str)))
-        elif isinstance(price_str, int):
-            price = price_str
-
-        # Commented out logging function for future use
-        logging.info(f"Payment Data: Subject: {subject_name}, Price: {price}, Language: {language}")
-
-        # Try to find subject info in paid_subjects collection
-        subject_info = paid_subjects_collection.find_one({
-            "subject_name": {"$regex": f"^{subject_name}$", "$options": "i"},
-            "price": price,
-            "language": {"$regex": f"^{language}$", "$options": "i"} if language != 'N/A' else {}
-        })
-
-        # If no subject info found, try more relaxed queries
-        if not subject_info:
-            # Try matching by subject name and price only
-            subject_info = paid_subjects_collection.find_one({
-                "subject_name": {"$regex": f"^{subject_name}$", "$options": "i"},
-                "price": price
-            })
-
-        # If still no subject info, try matching by price and language
-        if not subject_info:
-            subject_info = paid_subjects_collection.find_one({
-                "price": price,
-                "language": {"$regex": f"^{language}$", "$options": "i"}
-            })
+        #logging.info(f"Querying MongoDB: {subject_query}")
+        subject_info = paid_subjects_collection.find_one(subject_query)
 
         if subject_info:
+            subject_name = subject_name or subject_info.get("subject", "Unknown")
+            language = language or subject_info.get("language", "Unknown")
+            month = month or subject_info.get("month", "Unknown")
             pdf_link = subject_info.get("pdf_link", "N/A")
-            response_text += (
-                f"Payment ID: {payment_data.get('payment_id', 'N/A')}\n\n"
-                f"Date: {payment_data.get('date', 'N/A')}\n\n"
-                f"Subject: {subject_name}\n\n"
-                f"Price: ₹{price}\n\n"
-                f"Language: {language}\n\n"
-                f"PDF Link: {pdf_link}\n\n"
-            )
         else:
-            response_text += f"No paid content found for the subject '{subject_name}' at price ₹{price}.\n"
+            #logging.warning(f"No matching subject found for: {subject_query}")
+            pdf_link = "N/A"
 
-    response_text += "Thanks for your support! 😊"
-    return {"fulfillmentText": response_text}
+        #logging.info(f"PDF Link Found: {pdf_link}")
+
+        text_block = f"""✅ Payment Verified!  
+🆔 Payment ID: {payment_id}        
+💰 Price: ₹{price}  
+
+📌 Product {idx}:
+📖 Subject: {subject_name}  
+📆 Month: {month}  
+🗣 Language: {language}  
+"""
+
+        if pdf_link != "N/A":
+            text_block += f"\n📄 Download PDF: {pdf_link}\n"
+        else:
+            text_block += "\n⚠️ No PDF link found for this subject.\n"
+
+        text_block += "\n🙏 Thank you for your support! 😊"
+
+        fulfillment_messages.append({"text": {"text": [text_block]}})
+
+    return {"fulfillmentMessages": fulfillment_messages}
+
