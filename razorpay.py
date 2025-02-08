@@ -20,7 +20,7 @@ payments_collection = db["payments"]
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+#logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 def verify_razorpay_signature(request_data, received_signature):
     """Verify Razorpay webhook signature using HMAC-SHA256."""
@@ -30,8 +30,8 @@ def verify_razorpay_signature(request_data, received_signature):
         digestmod=hashlib.sha256
     ).hexdigest()
     
-    logging.info(f"Generated Signature: {generated_signature}")
-    logging.info(f"Received Signature: {received_signature}")
+    #logging.info(f"Generated Signature: {generated_signature}")
+    #logging.info(f"Received Signature: {received_signature}")
 
     return hmac.compare_digest(generated_signature, received_signature)
 
@@ -41,8 +41,8 @@ def handle_razorpay_webhook():
     received_signature = request.headers.get('X-Razorpay-Signature')
 
     # Log the received request for debugging
-    logging.info(f"Received Razorpay Webhook Data: {request_data}")
-    logging.info(f"Received Signature: {received_signature}")
+    #logging.info(f"Received Razorpay Webhook Data: {request_data}")
+    #logging.info(f"Received Signature: {received_signature}")
 
     # Reject request if signature is missing
     if not received_signature:
@@ -68,7 +68,7 @@ def handle_razorpay_webhook():
         status = payment.get("status", "unknown")
         email = payment.get("email", "not_provided")
         mobile_no = payment.get("contact", "not_provided")
-        transaction_id = payment.get("acquirer_data", {}).get("transaction_id", "N/A")
+        rrn = payment.get("acquirer_data", {}).get("rrn", "N/A")
         date = payment.get("created_at", 0)
 
         # Convert date if available
@@ -85,7 +85,7 @@ def handle_razorpay_webhook():
                 "email": email,
                 "mobile_no": mobile_no,
                 "payment_id": payment_id,
-                "transaction_id": transaction_id,
+                "rrn": rrn,
                 "date": readable_date,
                 "language": language,
                 "subject": subject,
