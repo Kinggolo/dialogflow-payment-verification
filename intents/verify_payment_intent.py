@@ -23,8 +23,8 @@ def verify_payment(user_input):
         query["email"] = user_input["email"]
     if user_input.get("payment_id"):
         query["payment_id"] = user_input["payment_id"]
-    if user_input.get("transaction_id"):
-        query["transaction_id"] = user_input["transaction_id"]
+    if user_input.get("rrn"):
+        query["rrn"] = user_input["rrn"]
 
     if not query:
         return {"fulfillmentText": "Please provide your email, payment ID, or transaction ID."}
